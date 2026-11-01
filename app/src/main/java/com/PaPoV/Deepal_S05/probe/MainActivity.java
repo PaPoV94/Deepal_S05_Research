@@ -178,6 +178,20 @@ public class MainActivity extends Activity {
         directAuthBtn.setText("18) DIRECTLY AUTHORIZE this laptop's key (bypass the broken dialog)");
         root.addView(directAuthBtn);
 
+        // 19/20) Continuous logcat capture - for catching a one-off event (a toast/warning that
+        // appears while driving, where there's no time to react and start logcat at that exact
+        // moment) without needing the laptop plugged in when it happens. logcat's own -f/-r/-n
+        // flags do the file writing and rotation natively in the child process, so it keeps
+        // running (reparented to init) even if this Activity/app is killed - start it once,
+        // drive around, come back later and pull the file.
+        Button startLogBtn = new Button(this);
+        startLogBtn.setText("19) START continuous logcat capture (survives app kill, for catching one-off toasts)");
+        root.addView(startLogBtn);
+
+        Button stopLogBtn = new Button(this);
+        stopLogBtn.setText("20) STOP continuous logcat capture");
+        root.addView(stopLogBtn);
+
         log = new TextView(this);
         log.setTextIsSelectable(true);
         root.addView(log);
@@ -244,6 +258,82 @@ public class MainActivity extends Activity {
         directAuthBtn.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { directlyAuthorizeAdbKey(); }
         });
+        startLogBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { startContinuousLogcat(); }
+        });
+        stopLogBtn.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { stopContinuousLogcat(); }
+        });
+    }
+
+    // Survives this Activity/process being killed - it's a separate child process (reparented to
+    // init), not a thread of this one. A static field only helps STOP it from the same app
+    // lifetime; if the app process itself dies, "logcat -f ..." keeps writing regardless, and a
+    // fresh launch of DeepalProbe can't rediscover the old Process handle - button 20 will then
+    // report "not running from this session" even though the file is still growing. Kill it by
+    // filename (pkill/ps+kill via button 15) if that happens, or just let -n cap the total size.
+    private static Process continuousLogcatProcess;
+    private static final String CONTINUOUS_LOGCAT_FILENAME = "continuous_logcat.txt";
+
+    private void startContinuousLogcat() {
+        if (continuousLogcatProcess != null) {
+            append("\n(continuous logcat already running from this session - stop it first if you want to restart)");
+            return;
+        }
+        final File logFile = new File(outDir, CONTINUOUS_LOGCAT_FILENAME);
+        append("\n=== Starting continuous logcat -> " + logFile.getAbsolutePath() + " ===");
+        new Thread(new Runnable() {
+            public void run() {
+                StringBuilder sb = new StringBuilder();
+                try {
+                    Runtime.getRuntime().exec(new String[]{"logcat", "-c"}).waitFor();
+                    // -r4096 -n5: rotate every 4MB, keep 5 files (~20MB total) - old entries fall
+                    // off automatically so this can be left running indefinitely without filling
+                    // storage. No tag filter (plain *:V default) since we don't know the source.
+                    Process p = Runtime.getRuntime().exec(new String[]{
+                            "logcat", "-v", "threadtime",
+                            "-f", logFile.getAbsolutePath(), "-r", "4096", "-n", "5"});
+                    continuousLogcatProcess = p;
+                    sb.append("Started, pid-holding process object stored.\n");
+                    sb.append("Trigger the warning you're after, then press 20 (or just pull the file later -\n");
+                    sb.append("it keeps writing even if this app is closed/killed).\n");
+                    sb.append("File: ").append(logFile.getAbsolutePath()).append("\n");
+                } catch (Throwable t) {
+                    sb.append("Failed to start: ").append(t).append("\n");
+                }
+                append(sb.toString());
+            }
+        }).start();
+    }
+
+    private void stopContinuousLogcat() {
+        append("\n=== Stopping continuous logcat ===");
+        new Thread(new Runnable() {
+            public void run() {
+                StringBuilder sb = new StringBuilder();
+                if (continuousLogcatProcess != null) {
+                    continuousLogcatProcess.destroy();
+                    continuousLogcatProcess = null;
+                    sb.append("Destroyed the process handle held by this session.\n");
+                } else {
+                    sb.append("No process handle in this session (either never started here, or\n");
+                    sb.append("this app was restarted since) - looking for a leftover 'logcat' process\n");
+                    sb.append("writing to ").append(CONTINUOUS_LOGCAT_FILENAME).append(" and killing it directly...\n");
+                    try {
+                        Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c",
+                                "pkill -f '" + CONTINUOUS_LOGCAT_FILENAME + "'"});
+                        p.waitFor();
+                        sb.append("pkill exit=").append(p.exitValue()).append(" (0 = found and killed something)\n");
+                    } catch (Throwable t) {
+                        sb.append("pkill attempt failed: ").append(t).append("\n");
+                    }
+                }
+                File logFile = new File(outDir, CONTINUOUS_LOGCAT_FILENAME);
+                sb.append("File on disk: ").append(logFile.getAbsolutePath())
+                        .append(" (").append(logFile.length()).append(" bytes)\n");
+                append(sb.toString());
+            }
+        }).start();
     }
 
     /**
