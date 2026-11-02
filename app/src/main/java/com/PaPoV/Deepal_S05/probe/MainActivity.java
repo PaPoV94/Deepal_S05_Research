@@ -287,12 +287,43 @@ public class MainActivity extends Activity {
                 StringBuilder sb = new StringBuilder();
                 try {
                     Runtime.getRuntime().exec(new String[]{"logcat", "-c"}).waitFor();
-                    // -r4096 -n5: rotate every 4MB, keep 5 files (~20MB total) - old entries fall
-                    // off automatically so this can be left running indefinitely without filling
-                    // storage. No tag filter (plain *:V default) since we don't know the source.
+                    // -r50000 -n15: rotate every 50MB, keep 15 files (~750MB total, plenty of
+                    // free space on this device per `df /sdcard`) - old entries fall off
+                    // automatically, can be left running indefinitely. The silenced tags below
+                    // were measured live (2026-11-02): this platform's logcat is EXTREMELY
+                    // chatty by default across many unrelated subsystems (APA parking-assist
+                    // telemetry alone dumps a ~150-field JSON blob per CAN frame) - a first pass
+                    // silencing only senseauto-sdk still burned a 20MB/5-file buffer down to
+                    // ~90 seconds of real coverage, because several OTHER tags were just as bad
+                    // (ranked by a `sed`+`sort|uniq -c` frequency count against a live capture).
+                    // Everything NOT in this list stays at default *:V - add more ":S" entries
+                    // here if yet another tag turns out to be similarly noisy; the goal is hours
+                    // of real coverage, not perfect silence.
+                    // Second pass (live, 2026-11-02): even after the first 16 tags above, volume
+                    // was still ~130KB/s - a fresh frequency count turned up another ~17 equally
+                    // noisy tags (TboxServer, the vehicle HAL service, VirtualCarManager, several
+                    // APA/TCS/HSDK subsystems). After silencing those too the distribution
+                    // flattened out (no more single tag dominating) at ~77KB/s - good enough for
+                    // hours of coverage with the 750MB budget above, diminishing returns past
+                    // this point so stopped here rather than chasing every remaining tag.
                     Process p = Runtime.getRuntime().exec(new String[]{
                             "logcat", "-v", "threadtime",
-                            "-f", logFile.getAbsolutePath(), "-r", "4096", "-n", "5"});
+                            "-f", logFile.getAbsolutePath(), "-r", "50000", "-n", "15",
+                            "*:V",
+                            "senseauto-sdk:S", "mcuc:S", "SceneLog:S",
+                            "VSLog_Permission_PermissionManagerImplNew:S", "jni_oms:S",
+                            "APA_APP_NATIVE:S", "StrApaData:S", "ApaDataParse:S",
+                            "CameraApp_HSDK:S", "gps_hdbd:S", "aiscene-FixApiImpl:S",
+                            "HobotDmsManager:S", "VehicleInstance:S",
+                            "android.hardware.automotive.vehicle@2.0-service:S",
+                            "7012CameraApp>ApaDataManager:S", "TCS_VCPS:S", "HSDK64-master:S",
+                            "TboxServer[x.0.65]:S", "Ps-Ver@230625:S",
+                            "CaDouble-_1.0.6.O_ota3:S", "WTButton:S",
+                            "P-1.8.0.25_beta-VehicleCenterImpl:S",
+                            "[APA_APP2026.05.25]APAPresent:S", "AiServerClient-WEAK:S",
+                            "DvrLog->:S", "DmsModule:S", "HSDK64-sod2:S", "EvsProxy:S",
+                            "WTThemeSDK:S", "VehicleSignalManager:S", "_AirConditioner__:S",
+                            "7012CameraApp>WorkM:S"});
                     continuousLogcatProcess = p;
                     sb.append("Started, pid-holding process object stored.\n");
                     sb.append("Trigger the warning you're after, then press 20 (or just pull the file later -\n");
